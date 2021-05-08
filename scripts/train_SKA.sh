@@ -1,3 +1,6 @@
+#!/bin/bash
+
+cd `dirname "$BASH_SOURCE"`
 cd ..
 python main_SKA.py \
 --data-path /HDD/DATASETS/ \

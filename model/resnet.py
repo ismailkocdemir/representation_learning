@@ -315,6 +315,7 @@ class ResNet(nn.Module):
         x = torch.flatten(x, 1)
 
         return x, featmaps
+        
 
     def forward_head(self, x):
         if self.projection_head is not None:
@@ -336,7 +337,7 @@ class ResNet(nn.Module):
 
     def forward(self, inputs):
         if self.multi_cropped_input:
-            assert len(self.returned_featmaps == 0), 'Can not return feature maps from the backbone for the multi-cropped dataset.'
+            assert len(self.returned_featmaps) == 0, 'Can not return feature maps from the backbone for the multi-cropped dataset.'
             if not isinstance(inputs, list):
                 inputs = [inputs]
             idx_crops = torch.cumsum(torch.unique_consecutive(
@@ -356,11 +357,15 @@ class ResNet(nn.Module):
         else:
             out, featmaps = self.forward_backbone(inputs)
             h_1 = self.forward_head(out)
+            to_return = [h_1,]
             
             if self.double_head:
-                return h_1, self.forward_head_2(out), featmaps
+                to_return.append(self.forward_head_2(out))
             
-            return h_1, featmaps
+            if len(featmaps):
+                to_return.append(featmaps)
+            
+            return to_return
 
 
 class STN_Resnet_VAE(nn.Module):
@@ -454,7 +459,7 @@ class STN_Resnet_VAE(nn.Module):
         # loop through the views. there should be two of them.
         for (view, theta) in zip(views, thetas[::-1]):
             # extract features with resnet
-            mu, log_var = self.resnet(view)
+            mu, log_var, = self.resnet(view)
             mus.append(mu)
             log_vars.append(log_var)
             

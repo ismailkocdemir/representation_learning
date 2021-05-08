@@ -3,7 +3,7 @@ import math
 import os
 import shutil
 import time
-from util.logging import getLogger
+from logging import getLogger
 
 import numpy as np
 import torchvision
@@ -19,9 +19,9 @@ from util.util import (
     bool_flag,
     initialize_exp,
     restart_from_checkpoint,
-    fix_random_seeds,
     AverageMeter,
 )
+from model.model_util import fix_random_seeds
 import model.resnet as resnet_models
 
 logger = getLogger()
