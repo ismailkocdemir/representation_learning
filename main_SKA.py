@@ -60,19 +60,13 @@ parser.add_argument(
 ###################################
 parser.add_argument(
     '--num-epochs',
-    default=200,
+    default=500,
     type=int,
     help='Number of epochs to train'
 )
 parser.add_argument(
-    '--warmup-epoch',
-    default=1,
-    type=int,
-    help='Number of warmup epochs to train'
-)
-parser.add_argument(
     '--batch-size',
-    default=32,
+    default=128,
     type=int,
     help='batch size.'
 )
@@ -83,11 +77,25 @@ parser.add_argument(
     choices=['SGD', 'Adam'],
     help='Optimizer. Choose from: [SGD, Adam]'
 )
+parser.add_argument("--final_lr", 
+    default=0.001, 
+    type=float, 
+    help="base learning rate")
 parser.add_argument(
     '--lr',
     type=float,
-    default=1e-2,
+    default=0.1,
     help='learning rate'
+)
+parser.add_argument("--warmup_epochs", 
+    default=10, 
+    type=int, 
+    help="number of warmup epochs"
+)
+parser.add_argument("--start_warmup", 
+    default=0.01, 
+    type=float,                
+    help="initial warmup learning rate"
 )
 parser.add_argument(
     '--momentum',
@@ -108,7 +116,7 @@ parser.add_argument(
 ###################################
 parser.add_argument(
     '--num-layers',
-    default=18,
+    default=50,
     type=int,
     choices=[18, 34, 50, 101],
     help='Number of layer in the feature extractor(resnet): [18,34,50,101].'
@@ -240,10 +248,14 @@ def main():
         assert(False), 'optimizer not implemented'
 
     criterion = nn.CrossEntropyLoss(ignore_index=-1)
-    
-    train_scheduler = optim.lr_scheduler.MultiStepLR(optimizer, milestones=[60, 120, 160], gamma=0.2)
-    iter_per_epoch = len(dataloaders['train'])
-    warmup_scheduler = WarmUpLR(optimizer, iter_per_epoch * args.warmup_epoch)
+
+    warmup_lr_schedule = np.linspace(args.start_warmup, args.lr, len(dataloaders['train']) * args.warmup_epochs)
+    iters = np.arange(len(dataloaders['train']) * (args.num_epochs - args.warmup_epochs))
+    cosine_lr_schedule = np.array([args.final_lr + 0.5 * (args.lr - args.final_lr) * (1 + \
+                         math.cos(math.pi * t / (len(dataloaders['train']) * (args.num_epochs - args.warmup_epochs)))) for t in iters])
+    lr_schedule = np.concatenate((warmup_lr_schedule, cosine_lr_schedule))
+
+    logger.info("Building optimizer done.")
 
     # optionally resume from a checkpoint
     to_restore = {"epoch": 0, "val_acc":0, "best_val_acc":0}
@@ -260,12 +272,9 @@ def main():
     for epoch in range(start_epoch, args.num_epochs):
         
         logger.info("============ Starting epoch %i ... ============" % epoch)
-        
-        if epoch > args.warmup_epoch:
-            train_scheduler.step(epoch)
-        
+
         # train for one epoch
-        scores = train_model(model, word_embeddings, dataloaders['train'], optimizer, criterion, epoch, warmup_scheduler, writer)
+        scores = train_model(model, word_embeddings, dataloaders['train'], optimizer, criterion, epoch, lr_schedule, writer)
 
         ### evaluate if needewd
         if epoch % args.val_freq == 0:
@@ -295,7 +304,7 @@ def main():
 
     writer.close()
 
-def train_model(model, word_embeddings, dataloader, optimizer, criterion, epoch, warmup_scheduler, writer):
+def train_model(model, word_embeddings, dataloader, optimizer, criterion, epoch, lr_schedule, writer):
     # train the network for one epoch
     batch_time = AverageMeter()
     data_time = AverageMeter()
@@ -306,15 +315,15 @@ def train_model(model, word_embeddings, dataloader, optimizer, criterion, epoch,
     if word_embeddings != None:
         word_embeddings.train()
 
-    ce_warmup_iters = len(dataloader.dataset) * args.ce_warmup_epochs
+    ce_warmup_iters = len(dataloader) * args.ce_warmup_epochs
     end = time.time() 
     for it,data in enumerate(dataloader):
         # measure data loading time
         data_time.update(time.time() - end)
         # update learning rate
         iteration = epoch * len(dataloader) + it
-        if epoch <= args.warmup_epoch:
-            warmup_scheduler.step()
+        for param_group in optimizer.param_groups:
+            param_group["lr"] = lr_schedule[iteration]
         
         # ============ forward passes ... ============
         imgs = data['img'].to(device)
@@ -323,7 +332,7 @@ def train_model(model, word_embeddings, dataloader, optimizer, criterion, epoch,
 
         # ============ backward and optim step ... ============
         log_items = {}
-        
+            
         # CKA loss between feature maps and word embeddings
         sim_loss_sum = 0.0
         if word_embeddings != None:

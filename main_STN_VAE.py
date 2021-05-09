@@ -112,7 +112,7 @@ def main():
         stn_latent_size=args.stn_latent_size,
         encoder_hidden_size=args.encoder_hidden_size,
         vae_latent_size=args.vae_latent_size,
-        view_scales=[0, 0.7,  0.5, 0.5]
+        view_scales=[0, 0.7,  0,7, 0.7, 0.5, 0.5, 0.5, 0.5]
     )
 
     # copy model to GPU
