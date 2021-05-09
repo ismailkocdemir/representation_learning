@@ -246,7 +246,7 @@ def main():
     warmup_scheduler = WarmUpLR(optimizer, iter_per_epoch * args.warmup_epoch)
 
     # optionally resume from a checkpoint
-    to_restore = {"epoch": 0, "val_acc":0}
+    to_restore = {"epoch": 0, "val_acc":0, "best_val_acc":0}
     restart_from_checkpoint(
         os.path.join(args.dump_path, "checkpoint.pth.tar"),
         run_variables=to_restore,
@@ -254,8 +254,9 @@ def main():
         optimizer=optimizer,
     )
 
-    eval_scores = (to_restore["val_acc"], )
+    eval_score = to_restore["val_acc"]
     start_epoch = to_restore["epoch"]
+    best_val_acc = to_restore["best_val_acc"]
     for epoch in range(start_epoch, args.num_epochs):
         
         logger.info("============ Starting epoch %i ... ============" % epoch)
@@ -268,14 +269,17 @@ def main():
 
         ### evaluate if needewd
         if epoch % args.val_freq == 0:
-            eval_scores = eval_model(model, word_embeddings, dataloaders['test'], epoch, writer)
+            eval_score = eval_model(model, word_embeddings, dataloaders['test'], epoch, writer)
+            if eval_score > best_val_acc:
+                best_val_acc = eval_score
         
-        training_stats.update(scores + eval_scores)
+        training_stats.update(scores + (eval_score))
 
         # after epoch: save checkpoints
         save_dict = {
             "epoch": epoch + 1,
             "val_acc": eval_scores[0],
+            "best_val_acc": best_val_acc,
             "state_dict": model.state_dict(),
             "optimizer": optimizer.state_dict(),
         }
@@ -431,7 +435,7 @@ def eval_model(model, word_embeddings, dataloader, epoch, writer):
     )
     writer.flush()
 
-    return (val_acc,)
+    return val_acc
 
 if __name__ == "__main__":
     main()

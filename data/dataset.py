@@ -196,7 +196,7 @@ class MultiCropDataset(datasets.ImageFolder):
 
 class KorniaAugmentationPipeline(nn.Module):
     def __init__(self,
-                s_color=0.5, 
+                s_color=0.1, 
                 p_color=0.8, 
                 p_flip=0.5,
                 p_gray=0.2, 

@@ -51,20 +51,18 @@ parser.add_argument("--stn_latent_size", default=64, type=int,
                     help="size of the latent dimension in the Spatial Transformer")
 parser.add_argument("--vae_latent_size", default=128, type=int,
                     help="size of the latent dimension in the VAE")
-parser.add_argument('--penalize_view_similarity', type=bool_flag, default=True, 
-                    help='if set, augmented views are penalizied if they are too similar')
 
 #########################
 #### optim parameters ###
 #########################
 parser.add_argument("--epochs", default=100, type=int,
                     help="number of total epochs to run")
-parser.add_argument("--batch_size", default=32, type=int,
+parser.add_argument("--batch_size", default=2, type=int,
                     help="batch size per gpu, i.e. how many unique instances per gpu")
 parser.add_argument("--base_lr", default=0.01, type=float, help="base learning rate")
 parser.add_argument("--final_lr", type=float, default=0, help="final learning rate")
 parser.add_argument("--wd", default=1e-4, type=float, help="weight decay")
-parser.add_argument("--warmup_epochs", default=10, type=int, help="number of warmup epochs")
+parser.add_argument("--warmup_epochs", default=1, type=int, help="number of warmup epochs")
 parser.add_argument("--start_warmup", default=0, type=float,
                     help="initial warmup learning rate")
 
@@ -114,7 +112,7 @@ def main():
         stn_latent_size=args.stn_latent_size,
         encoder_hidden_size=args.encoder_hidden_size,
         vae_latent_size=args.vae_latent_size,
-        penalize_view_similarity=args.penalize_view_similarity
+        view_scales=[0, 0.7,  0.5, 0.5]
     )
 
     # copy model to GPU
@@ -197,7 +195,7 @@ def train(train_loader, model, optimizer, epoch, lr_schedule, summary_writer):
         optimizer.step()
 
         # ============ misc ... ============
-        losses.update(loss_vars['reconstruction_loss'], inputs[0].size(0))
+        losses.update(loss.item(), inputs[0].size(0))
         batch_time.update(time.time() - end)
         end = time.time()
         if it % 50 == 0:
@@ -205,10 +203,12 @@ def train(train_loader, model, optimizer, epoch, lr_schedule, summary_writer):
             summary_writer.add_scalar('lr', lr_schedule[iteration], iteration)
             for k,v in loss_vars.items():
                 summary_writer.add_scalar(k, v, iteration)
-            visuals_dict = model.get_current_visuals()
-            for k,v in visuals_dict.items():
-                grid = torchvision.utils.make_grid(v)
-                summary_writer.add_image(k, grid, iteration)
+            
+            if it % 500 == 0:
+                visuals_dict = model.get_current_visuals()
+                for k,v in visuals_dict.items():
+                    grid = torchvision.utils.make_grid(v)
+                    summary_writer.add_image(k, grid, iteration)
             summary_writer.flush()
 
             # update the logger

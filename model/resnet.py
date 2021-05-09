@@ -179,7 +179,7 @@ class ResNet(nn.Module):
         num_out_filters = width_per_group * widen
         if self.small_image:
             self.conv1 = nn.Conv2d(
-                3, num_out_filters, kernel_size=5, stride=1, padding=2, bias=False
+                3, num_out_filters, kernel_size=3, stride=1, padding=1, bias=False
             )
         else:
             self.conv1 = nn.Conv2d(
@@ -190,7 +190,7 @@ class ResNet(nn.Module):
         if not self.small_image:
             self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
         
-        self.layer1 = self._make_layer(block, num_out_filters, layers[0])
+        self.layer1 = self._make_layer(block, num_out_filters, layers[0], stride=1)
         num_out_filters *= 2
         self.layer2 = self._make_layer(
             block, num_out_filters, layers[1], stride=2, dilate=replace_stride_with_dilation[0]
@@ -203,7 +203,7 @@ class ResNet(nn.Module):
         self.layer4 = self._make_layer(
             block, num_out_filters, layers[3], stride=2, dilate=replace_stride_with_dilation[2]
         )
-        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+        self.avgpool = nn.AdaptiveAvgPool2d((1,1))
 
         # normalize output features
         self.l2norm = normalize
@@ -386,11 +386,12 @@ class STN_Resnet_VAE(nn.Module):
             stn_latent_size=64,
             vae_latent_size=128,
             encoder_hidden_size = 1024,
-            penalize_view_similarity=True
+            view_scales=[0]*7
     ):
         super(STN_Resnet_VAE, self).__init__()
-        self.penalize_view_similarity = penalize_view_similarity
-        self.stn = get_transformer('affine_RNN')(input_shape, stn_latent_size)
+        self.view_scales = view_scales
+        self.num_views = len(view_scales)
+        self.stn = get_transformer('affine_RNN')(input_shape, stn_latent_size, self.num_views)
         self.resnet = ResNet(
             block,
             layers,
@@ -427,8 +428,6 @@ class STN_Resnet_VAE(nn.Module):
         # since the likelihood and prior is modelled with gaussian, 
         # we end up with MSE after omitting variance and other constants.
         self.contrastive_loss = nn.MSELoss()
-        self.view_similarity = nn.CosineSimilarity(dim=1)
-
         self.visuals = {}
 
     def get_current_visuals(self,):
@@ -455,30 +454,29 @@ class STN_Resnet_VAE(nn.Module):
         mus = []
         log_vars = []
         recons = []
-        recons_target = []
         # loop through the views. there should be two of them.
-        for (view, theta) in zip(views, thetas[::-1]):
+        for (view, theta) in zip(views, thetas):
             # extract features with resnet
-            mu, log_var, = self.resnet(view)
+            mu, log_var = self.resnet(view)
             mus.append(mu)
             log_vars.append(log_var)
             
-            # each feature-map is combined with affine transf. params of the other (theta list is reversed)
+            # each feature-map is combined with affine transf. params that produced it.
             latent = self.reparameterize(mu, log_var)
             conditioned_latent = torch.cat([latent, theta], dim=1)
             recon = self.decoder(conditioned_latent)
             recons.append(recon)
             
-            # downsample the input for simplified recons. target
-            target = nn.functional.interpolate(view, scale_factor=1/4)
-            recons_target.append(target)
-        
+        # downsample the input for simplified recons. target
+        recons_target = nn.functional.interpolate(inputs, scale_factor=1/4)
+    
         # cache the first four of the inputs and extracted views for visualisation
-        self.visuals = {'img':inputs[:4].detach().cpu(), 
-                        'view_1':views[0][:4].detach().cpu(), 
-                        'view_2':views[1][:4].detach().cpu()
-                        }
-        return {'recons':recons, 'mu':mus, 'log_var':log_vars, 'theta':thetas, 'input':recons_target[::-1]}
+        self.visuals = {'img':inputs[:4].detach().cpu()}
+        view_dict = dict([ ('view_{}'.format(idx), views[idx][:4].detach().cpu()) for idx in range(len(views))])
+        recons_dict = dict([ ('recons_{}'.format(idx), recons[idx][:4].detach().cpu()) for idx in range(len(views))])
+        self.visuals = {**self.visuals, **view_dict, **recons_dict}
+                        
+        return {'recons':recons, 'mu':mus, 'log_var':log_vars, 'theta':thetas, 'input':recons_target}
 
 
     def KLD(self, mu, log_var):
@@ -494,11 +492,11 @@ class STN_Resnet_VAE(nn.Module):
         '''
         total_loss = 0.
         loss_vars = {}
-        # loop trough the views extracted with RNN-SPN. There should be two of them. 
+        # loop trough the views extracted with RNN-SPN.
         for idx, recon in enumerate(outputs['recons']):
             # add reconstruction loss to total loss, for the current crop/view in the outputs. 
-            recons_loss = self.contrastive_loss(recon, outputs['input'][idx])
-            loss_vars['reconstruction_loss'] = recons_loss
+            recons_loss = self.contrastive_loss(recon, outputs['input'])
+            loss_vars['reconstruction_loss_{}'.format(idx)] = recons_loss
             total_loss = total_loss + recons_loss
             
             # add total VAE loss (KLD) to total loss, for the current crop/view in the outputs. 
@@ -506,14 +504,17 @@ class STN_Resnet_VAE(nn.Module):
             loss_vars['KLD_' + str(idx)] = kld_loss            
             total_loss = total_loss + kld_loss
 
-        loss_vars['view_similarity_loss'] = 0.
-        if self.penalize_view_similarity:
-            # penalize too similar views (cosine(v1, v2) > 0.9)
-            view_sim = self.view_similarity(outputs['theta'][0], outputs['theta'][1])
-            zero_tensor = torch.FloatTensor([0]).to(outputs['theta'][0].device)
-            view_sim_loss = torch.max(zero_tensor, view_sim - 0.9).mean()
-            loss_vars['view_similarity_loss'] = view_sim_loss
-            total_loss = total_loss + view_sim_loss
+        loss_vars['view_scale_loss'] = 0.
+        for idx, s in enumerate(self.view_scales):
+            if s > 0:
+                # only penalize the scale parameters in the theta.
+                zero_tensor = torch.FloatTensor([0,0,0,0,0,0]).to(device)
+                target_tensor = torch.FloatTensor([s, 0, 1-s, 0, s, 1-s]).to(device)
+                sx_loss = torch.max(zero_tensor, outputs['theta'][idx] - target_tensor).mean()
+                sy_loss = torch.max(zero_tensor, outputs['theta'][idx] - target_tensor).mean()
+                
+                loss_vars['view_scale_loss'] = sx_loss + sy_loss
+                total_loss = total_loss + loss_vars['view_scale_loss']
 
         return total_loss, loss_vars 
         

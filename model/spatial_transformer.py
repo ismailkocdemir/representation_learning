@@ -9,6 +9,8 @@ from .model_util import torch_expm, construct_affine
 sys.path.append("..")
 from data.dataset import PILRandomGaussianBlur, get_color_distortion, KorniaAugmentationPipeline
 
+device = "cuda:0" if torch.cuda.is_available() else "cpu"
+
 def get_transformer(name):
     transformers = {'affine_RNN': ST_Affine_RNN,
                     'affinediff': ST_AffineDiff,
@@ -58,6 +60,7 @@ class ST_Affine_RNN(nn.Module):
             nn.Linear(self.hidden_shape//2, 3 * 2)
         )
         
+        self.affine_mask = torch.tensor([1, 0, 1, 0, 1, 1], dtype=torch.float, requires_grad=False).to(device)
         # Initialize the weights/bias with identity transformation
         self.fc_theta[2].weight.data.zero_()
         self.fc_theta[2].bias.data.copy_(torch.tensor([1, 0, 0, 0, 1, 0], dtype=torch.float))
@@ -79,15 +82,14 @@ class ST_Affine_RNN(nn.Module):
         for step in range(self.num_steps):
             # regress the affine matrix
             curr_h = self.RNN(feats, curr_h)        
-            theta = self.fc_theta(curr_h.squeeze(0))
+            theta = torch.mul(self.fc_theta(curr_h.squeeze(0)), self.affine_mask)
             thetas.append(theta)
 
             # produce the view
-            theta = theta.view(-1, 2, 3)
             output_size = torch.Size([x.shape[0], *self.input_shape])
-            grid = F.affine_grid(theta, output_size, align_corners=False)
+            grid = F.affine_grid(theta.view(-1, 2, 3), output_size, align_corners=False)
             view = F.grid_sample(x, grid, align_corners=False)
-            view = self.transform(view)[0]
+            #view = self.transform(view)[0]
             views.append(view)
 
         return views, thetas
