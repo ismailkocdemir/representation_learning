@@ -135,7 +135,7 @@ parser.add_argument(
 
 parser.add_argument(
     '--ce-warmup-epochs',
-    default=50,
+    default=100,
     type=int,
     help='linearly increase the cross-entropy loss weight'
 )
@@ -204,7 +204,7 @@ def main():
         dataloaders[split] = DataLoader(
             dataset,
             batch_size=args.batch_size,
-            shuffle=True,
+            shuffle=split=='train',
             num_workers=args.num_workers
         )
 
@@ -276,18 +276,18 @@ def main():
         # train for one epoch
         scores = train_model(model, word_embeddings, dataloaders['train'], optimizer, criterion, epoch, lr_schedule, writer)
 
-        ### evaluate if needewd
+        # evaluate if needed
         if epoch % args.val_freq == 0:
             eval_score = eval_model(model, word_embeddings, dataloaders['test'], epoch, writer)
             if eval_score > best_val_acc:
                 best_val_acc = eval_score
         
-        training_stats.update(scores + (eval_score))
+        training_stats.update(scores + (eval_score,))
 
         # after epoch: save checkpoints
         save_dict = {
             "epoch": epoch + 1,
-            "val_acc": eval_scores[0],
+            "val_acc": eval_score,
             "best_val_acc": best_val_acc,
             "state_dict": model.state_dict(),
             "optimizer": optimizer.state_dict(),
@@ -396,53 +396,54 @@ def train_model(model, word_embeddings, dataloader, optimizer, criterion, epoch,
 
 def eval_model(model, word_embeddings, dataloader, epoch, writer):
     # Set mode
-    model.eval()
-    if word_embeddings != None:
-        word_embeddings.eval()
+    #model.eval()
+    #if word_embeddings != None:
+    #    word_embeddings.eval()
 
-    softmax = nn.Softmax(dim=1)
-    correct = 0
-    seen_correct_per_class = {l: 0 for l in dataloader.dataset.labels}
-    sample_per_class = {l: 0 for l in dataloader.dataset.labels}
-    
-    end = time.time()
-    for it,data in enumerate(dataloader): #enumerate(tqdm(dataloader)):
-        # Forward pass
-        imgs = data['img'].to(device)
-        logits,_ = model(imgs)
-        gt_labels = data['label']
-        prob = softmax(logits)
-        prob = prob.data.cpu().numpy()
-        prob_zero_seen = np.copy(prob)
-
-        argmax_zero_seen = np.argmax(prob_zero_seen,1)
-        for i in range(prob.shape[0]):
-            pred_label = dataloader.dataset.labels[argmax_zero_seen[i]]
-            gt_label = gt_labels[i]
-            sample_per_class[gt_label] += 1
-            if gt_label==pred_label:
-                seen_correct_per_class[gt_label] += 1
+    with torch.no_grad():
+        softmax = nn.Softmax(dim=1)
+        correct = 0
+        seen_correct_per_class = {l: 0 for l in dataloader.dataset.labels}
+        sample_per_class = {l: 0 for l in dataloader.dataset.labels}
         
+        end = time.time()
+        for it,data in enumerate(dataloader): #enumerate(tqdm(dataloader)):
+            # Forward pass
+            imgs = data['img'].to(device)
+            logits,_ = model(imgs)
+            gt_labels = data['label']
+            prob = softmax(logits)
+            prob = prob.data.cpu().numpy()
+            prob_zero_seen = np.copy(prob)
 
-    seen_acc = 0
-    num_seen_classes = 0
-    for l in dataloader.dataset.labels:
-        seen_acc += (seen_correct_per_class[l] / sample_per_class[l])
-        num_seen_classes += 1
+            argmax_zero_seen = np.argmax(prob_zero_seen,1)
+            for i in range(prob.shape[0]):
+                pred_label = dataloader.dataset.labels[argmax_zero_seen[i]]
+                gt_label = gt_labels[i]
+                sample_per_class[gt_label] += 1
+                if gt_label==pred_label:
+                    seen_correct_per_class[gt_label] += 1
+            
 
-    val_acc = round(seen_acc*100 / num_seen_classes,4)
-    iteration = epoch * len(dataloader)
-    writer.add_scalar('val/acc',val_acc,iteration)
+        seen_acc = 0
+        num_seen_classes = 0
+        for l in dataloader.dataset.labels:
+            seen_acc += (seen_correct_per_class[l] / sample_per_class[l])
+            num_seen_classes += 1
 
-    # update the logger
-    logger.info(
-        "Epoch: [{0}]\t"
-        "Validation Acc.: {val_acc:.4f}".format(
-            epoch,
-            val_acc=val_acc
+        val_acc = round(seen_acc*100 / num_seen_classes,4)
+        iteration = epoch * len(dataloader)
+        writer.add_scalar('val/acc',val_acc,iteration)
+
+        # update the logger
+        logger.info(
+            "Epoch: [{0}]\t"
+            "Validation Acc.: {val_acc:.4f}".format(
+                epoch,
+                val_acc=val_acc
+            )
         )
-    )
-    writer.flush()
+        writer.flush()
 
     return val_acc
 
