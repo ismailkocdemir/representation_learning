@@ -22,6 +22,7 @@ from data.dataset import get_custom_dataset
 import util.io as io
 from logging import getLogger
 from util.util import *
+from util.dist_util import init_dist
 logger = getLogger()
 
 parser = argparse.ArgumentParser(description="Implementation of SKA (Supervised Kernel Alignment)")
@@ -31,7 +32,7 @@ device = "cuda:0" if torch.cuda.is_available() else "cpu"
 ###################################
 # DATASET
 ###################################
-parser.add_argument('--dataset-type', type=str, default='STL10', choices=['Cifar100', 'STL10'],
+parser.add_argument('--dataset-type', type=str, default='Cifar100', choices=['Cifar100', 'STL10'],
     help='which dataset to train on')
 parser.add_argument('--data-path',type=str, default='/HDD/DATASETS/', help='where dataset is located')
 parser.add_argument('--embed-path', type=str, default='/HDD/DATASETS/pretrained-embeddings', 
@@ -44,10 +45,10 @@ parser.add_argument('--download-dataset', action='store_true', help='download th
 parser.add_argument('--num-epochs', default=500, type=int, help='Number of epochs to train')
 parser.add_argument('--batch-size', default=128, type=int, help='batch size.')
 parser.add_argument('--optimizer', type=str, default='SGD',choices=['SGD', 'Adam'], help='Optimizer. Choose from: [SGD, Adam]')
-parser.add_argument("--final_lr", default=0.001, type=float, help="base learning rate")
-parser.add_argument('--lr', type=float, default=0.1, help='learning rate')
-parser.add_argument("--warmup_epochs", default=10, type=int, help="number of warmup epochs")
-parser.add_argument("--start_warmup", default=0.01, type=float, help="initial warmup learning rate")
+parser.add_argument('--lr', type=float, default=0.01, help='learning rate')
+parser.add_argument("--lr-decay-rate", default=0.1, type=float, help="learning rate decay rate")
+parser.add_argument("--warmup-epochs", default=0, type=int, help="number of warmup epochs")
+parser.add_argument("--start-warmup", default=0.01, type=float, help="initial warmup learning rate")
 parser.add_argument('--momentum', type=float, default=0.9, help='momentum for the optimizer.')
 parser.add_argument('--num-workers', default=4, type=int, help='number of workers for the dataloader')
 
@@ -71,18 +72,17 @@ parser.add_argument('--no-hypernym',action='store_true',
 parser.add_argument('--no-glove',action='store_true',
     help='exclude glove embeddings from vico embeddings')
 
+
 #########################
 #### dist parameters ###
 #########################
-parser.add_argument("--dist_url", default="env://", type=str, help="""url used to set up distributed
-                    training; see https://pytorch.org/docs/stable/distributed.html""")
 parser.add_argument("--world_size", default=-1, type=int, help="""
                     number of processes: it is set automatically and
                     should not be passed as argument""")
 parser.add_argument("--rank", default=0, type=int, help="""rank of this process:
                     it is set automatically and should not be passed as argument""")
-parser.add_argument("--local_rank", default=0, type=int,
-                    help="this argument is not used and should be ignored")
+parser.add_argument("--gpu_to_work_on", default=0, type=int, help="""local rank??""")
+
 
 ##################################
 #  LOGGING & SAVING
@@ -96,6 +96,7 @@ parser.add_argument("--seed", type=int, default=31, help="seed")
 def main():
     global args
     args = parser.parse_args()
+    args.rank, args.world_size, args.gpu_to_work_on = init_distributed_mode()
     fix_random_seeds(args.seed)
     logger, training_stats = initialize_exp(args, "epoch", "loss", "acc", "acc_val")
     writer = SummaryWriter(args.dump_path)
@@ -167,12 +168,17 @@ def main():
 
     # objective
     criterion = nn.CrossEntropyLoss(ignore_index=-1)
+    
     # optimizer and schedulers
     optimizer = LARC(optimizer=optimizer, trust_coefficient=0.001, clip=False)
+    # warm up
     warmup_lr_schedule = np.linspace(args.start_warmup, args.lr, len(dataloaders['train']) * args.warmup_epochs)
+    # cosine
     iters = np.arange(len(dataloaders['train']) * (args.num_epochs - args.warmup_epochs))
-    cosine_lr_schedule = np.array([args.final_lr + 0.5 * (args.lr - args.final_lr) * (1 + \
+    final_lr = args.lr * (args.lr_decay_rate) ** 3
+    cosine_lr_schedule = np.array([final_lr + 0.5 * (args.lr - final_lr) * (1 + \
                          math.cos(math.pi * t / (len(dataloaders['train']) * (args.num_epochs - args.warmup_epochs)))) for t in iters])
+    # warmup + cosine
     lr_schedule = np.concatenate((warmup_lr_schedule, cosine_lr_schedule))
 
     logger.info("Building optimizer done.")
