@@ -17,6 +17,78 @@ logger = getLogger()
 
 device = "cuda:0" if torch.cuda.is_available() else "cpu"
 
+
+def initialize_exp(params, *args, dump_params=True):
+    """
+    Initialize the experience:
+    - dump parameters
+    - create checkpoint repo
+    - create a logger
+    - create a panda object to keep track of the training statistics
+    """
+    
+    mkdir_if_not_exists(params.dump_path, recursive=True)
+
+    # dump parameters
+    if dump_params:
+        pickle.dump(params, open(os.path.join(params.dump_path, "params.pkl"), "wb"))
+
+    # create repo to store checkpoints
+    params.dump_checkpoints = os.path.join(params.dump_path, "checkpoints")
+    if not params.rank and not os.path.isdir(params.dump_checkpoints):
+        os.mkdir(params.dump_checkpoints)
+
+    # create a panda object to log loss and acc
+    training_stats = PD_Stats(
+        os.path.join(params.dump_path, "stats" + str(params.rank) + ".pkl"), args
+    )
+
+    # create a logger
+    logger = create_logger(os.path.join(params.dump_path, "train.log"), rank=params.rank)
+
+    logger.info("============ Initialized logger ============")
+    logger.info(
+        "\n".join("%s: %s" % (k, str(v)) for k, v in sorted(dict(vars(params)).items()))
+    )
+    logger.info("The experiment will be stored in %s\n" % params.dump_path)
+    logger.info("")
+    return logger, training_stats
+
+
+def init_distributed_mode(args):
+    """
+    Initialize the following variables:
+        - world_size
+        - rank
+    """
+
+    args.is_slurm_job = "SLURM_JOB_ID" in os.environ
+
+    if args.is_slurm_job:
+        args.rank = int(os.environ["SLURM_PROCID"])
+        args.world_size = int(os.environ["SLURM_NNODES"]) * int(
+            os.environ["SLURM_TASKS_PER_NODE"][0]
+        )
+    else:
+        # multi-GPU job (local or multi-node) - jobs started with torch.distributed.launch
+        # read environment variables
+        args.rank = int(os.environ["RANK"])
+        args.world_size = int(os.environ["WORLD_SIZE"])
+
+    # prepare distributed
+    dist.init_process_group(
+        backend="nccl",
+        init_method=args.dist_url,
+        world_size=args.world_size,
+        rank=args.rank,
+    )
+
+    # set cuda device
+    args.gpu_to_work_on = args.rank % torch.cuda.device_count()
+    torch.cuda.set_device(args.gpu_to_work_on)
+    return
+
+
 class LogFormatter:
     def __init__(self):
         self.start_time = time.time()
@@ -33,7 +105,8 @@ class LogFormatter:
         message = message.replace("\n", "\n" + " " * (len(prefix) + 3))
         return "%s - %s" % (prefix, message) if message else ""
 
-def create_logger(filepath):
+
+def create_logger(filepath, rank):
     """
     Create a logger.
     """
@@ -42,6 +115,8 @@ def create_logger(filepath):
 
     # create file handler and set level to debug
     if filepath is not None:
+        if rank > 0:
+            filepath = "%s-%i" % (filepath, rank)
         file_handler = logging.FileHandler(filepath, "a")
         file_handler.setLevel(logging.DEBUG)
         file_handler.setFormatter(log_formatter)
@@ -95,66 +170,6 @@ class PD_Stats(object):
             self.stats.to_pickle(self.path)
 
 
-def initialize_exp(params, *args, dump_params=True):
-    """
-    Initialize the experience:
-    - dump parameters
-    - create checkpoint repo
-    - create a logger
-    - create a panda object to keep track of the training statistics
-    """
-    
-    mkdir_if_not_exists(params.dump_path, recursive=True)
-
-    # dump parameters
-    if dump_params:
-        pickle.dump(params, open(os.path.join(params.dump_path, "params.pkl"), "wb"))
-
-    # create repo to store checkpoints
-    params.dump_checkpoints = os.path.join(params.dump_path, "checkpoints")
-    if not os.path.isdir(params.dump_checkpoints):
-        os.mkdir(params.dump_checkpoints)
-
-    # create a panda object to log loss and acc
-    training_stats = PD_Stats(
-        os.path.join(params.dump_path, "stats.pkl"), args
-    )
-
-    # create a logger
-    logger = create_logger(os.path.join(params.dump_path, "train.log"))
-    logger.info("============ Initialized logger ============")
-    logger.info(
-        "\n".join("%s: %s" % (k, str(v)) for k, v in sorted(dict(vars(params)).items()))
-    )
-    logger.info("The experiment will be stored in %s\n" % params.dump_path)
-    logger.info("")
-    return logger, training_stats
-
-def adjust_learning_rate(args, optimizer, epoch):
-    lr = args.lr
-    if args.cosine:
-        eta_min = lr * (args.lr_decay_rate ** 3)
-        lr = eta_min + (lr - eta_min) * (
-                1 + math.cos(math.pi * epoch / args.epochs)) / 2
-    else:
-        steps = np.sum(epoch > np.asarray(args.lr_decay_epochs))
-        if steps > 0:
-            lr = lr * (args.lr_decay_rate ** steps)
-
-    for param_group in optimizer.param_groups:
-        param_group['lr'] = lr
-
-
-def warmup_learning_rate(args, epoch, batch_id, total_batches, optimizer):
-    if args.warm and epoch <= args.warm_epochs:
-        p = (batch_id + (epoch - 1) * total_batches) / \
-            (args.warm_epochs * total_batches)
-        lr = args.warmup_from + p * (args.warmup_to - args.warmup_from)
-
-        for param_group in optimizer.param_groups:
-            param_group['lr'] = lr
-
-
 def restart_from_checkpoint(ckp_paths, run_variables=None, **kwargs):
     """
     Re-start from checkpoint
@@ -174,7 +189,7 @@ def restart_from_checkpoint(ckp_paths, run_variables=None, **kwargs):
 
     # open checkpoint file
     checkpoint = torch.load(
-        ckp_path, map_location=device
+        ckp_path,  map_location="cuda:" + str(torch.distributed.get_rank() % torch.cuda.device_count()
     )
 
     # key is what to look for in the checkpoint file

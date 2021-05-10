@@ -3,7 +3,8 @@
 cd `dirname "$BASH_SOURCE"`
 cd ..
 python main_SKA.py \
---data-path /HDD/DATASETS/ \
+--data-path ~/data/ \
+--embed-path ~/data/pretrained_embeddings \
 --dataset-type 'Cifar100' \
 --sim-loss \
 --vico-mode 'vico_select' \

@@ -11,9 +11,10 @@ from torch.utils.data import DataLoader
 from torch.autograd import Variable
 import torch.optim as optim
 from torch.utils.tensorboard import SummaryWriter
+from apex.parallel.LARC import LARC
 import numpy as np
 
-from model.model_util import WarmUpLR, fix_random_seeds
+from model.model_util import fix_random_seeds
 from model.word_embeddings import ViCoWordEmbeddings
 import model.resnet as resnet_models
 from data.dataset import get_custom_dataset
@@ -30,159 +31,67 @@ device = "cuda:0" if torch.cuda.is_available() else "cpu"
 ###################################
 # DATASET
 ###################################
-parser.add_argument(
-    '--dataset-type',
-    type=str,
-    default='STL10',
-    choices=['Cifar100', 'STL10'],
-    help='which dataset to train on'
-)
-parser.add_argument(
-    '--data-path',
-    type=str,
-    default='/HDD/DATASETS/',
-    help='where dataset is located'
-)
-parser.add_argument(
-    '--embed-path',
-    type=str,
-    default='/HDD/DATASETS/pretrained-embeddings',
-    help='where vico word embeddings is located'
-)
-parser.add_argument(
-    '--download-dataset',
-    action='store_true',
-    help='download the dataset from pytorch.datasets'   
-)
+parser.add_argument('--dataset-type', type=str, default='STL10', choices=['Cifar100', 'STL10'],
+    help='which dataset to train on')
+parser.add_argument('--data-path',type=str, default='/HDD/DATASETS/', help='where dataset is located')
+parser.add_argument('--embed-path', type=str, default='/HDD/DATASETS/pretrained-embeddings', 
+    help='where vico word embeddings is located')
+parser.add_argument('--download-dataset', action='store_true', help='download the dataset from pytorch.datasets')
 
 ###################################
 # TRAINING PARAMS
 ###################################
-parser.add_argument(
-    '--num-epochs',
-    default=500,
-    type=int,
-    help='Number of epochs to train'
-)
-parser.add_argument(
-    '--batch-size',
-    default=128,
-    type=int,
-    help='batch size.'
-)
-parser.add_argument(
-    '--optimizer',
-    type=str,
-    default='SGD',
-    choices=['SGD', 'Adam'],
-    help='Optimizer. Choose from: [SGD, Adam]'
-)
-parser.add_argument("--final_lr", 
-    default=0.001, 
-    type=float, 
-    help="base learning rate")
-parser.add_argument(
-    '--lr',
-    type=float,
-    default=0.1,
-    help='learning rate'
-)
-parser.add_argument("--warmup_epochs", 
-    default=10, 
-    type=int, 
-    help="number of warmup epochs"
-)
-parser.add_argument("--start_warmup", 
-    default=0.01, 
-    type=float,                
-    help="initial warmup learning rate"
-)
-parser.add_argument(
-    '--momentum',
-    type=float,
-    default=0.9,
-    help='momentum for the optimizer.'
-)
-parser.add_argument(
-    '--num-workers',
-    default=4,
-    type=int,
-    help='number of workers for the dataloader'
-)
-
+parser.add_argument('--num-epochs', default=500, type=int, help='Number of epochs to train')
+parser.add_argument('--batch-size', default=128, type=int, help='batch size.')
+parser.add_argument('--optimizer', type=str, default='SGD',choices=['SGD', 'Adam'], help='Optimizer. Choose from: [SGD, Adam]')
+parser.add_argument("--final_lr", default=0.001, type=float, help="base learning rate")
+parser.add_argument('--lr', type=float, default=0.1, help='learning rate')
+parser.add_argument("--warmup_epochs", default=10, type=int, help="number of warmup epochs")
+parser.add_argument("--start_warmup", default=0.01, type=float, help="initial warmup learning rate")
+parser.add_argument('--momentum', type=float, default=0.9, help='momentum for the optimizer.')
+parser.add_argument('--num-workers', default=4, type=int, help='number of workers for the dataloader')
 
 ###################################
 # MODEL
 ###################################
-parser.add_argument(
-    '--num-layers',
-    default=50,
-    type=int,
-    choices=[18, 34, 50, 101],
-    help='Number of layer in the feature extractor(resnet): [18,34,50,101].'
-)
-parser.add_argument(
-    '--sim-loss',
-    action='store_true',
-    help='include semantic similarity in the loss'
-)
-
-parser.add_argument(
-    '--one-hot',
-    action='store_true',
-    help='use one-hot labels instead of embeddings'
-)
-
-parser.add_argument(
-    '--ce-warmup-epochs',
-    default=100,
-    type=int,
-    help='linearly increase the cross-entropy loss weight'
-)
-parser.add_argument(
-    '--vico-mode',
-    type=str,
-    default='vico_linear',
-    choices=['vico_linear', 'vico_select'],
+parser.add_argument('--num-layers', default=50, type=int, choices=[18, 34, 50, 101],
+    help='Number of layer in the feature extractor(resnet): [18,34,50,101].')
+parser.add_argument('--sim-loss', action='store_true', 
+    help='include semantic similarity in the loss')
+parser.add_argument('--one-hot', action='store_true',
+ help='use one-hot labels instead of embeddings')
+parser.add_argument('--ce-warmup-epochs', default=50, type=int,
+ help='linearly increase the cross-entropy loss weight')
+parser.add_argument('--vico-mode', type=str, default='vico_linear', choices=['vico_linear', 'vico_select'],
     help='embedding types to be used in semantic similarity loss')
-parser.add_argument(
-    '--linear-dim',
-    type=int, 
-    default=200,
+parser.add_argument('--linear-dim', type=int, default=200,
     help='dimension of embeddings if linear is selected')
-
-parser.add_argument(
-    '--no-hypernym',
-    action='store_true',
+parser.add_argument('--no-hypernym',action='store_true',
     help='exclude hypernym co-oc. from vico embeddings')
-
-parser.add_argument(
-    '--no-glove',
-    action='store_true',
+parser.add_argument('--no-glove',action='store_true',
     help='exclude glove embeddings from vico embeddings')
 
+#########################
+#### dist parameters ###
+#########################
+parser.add_argument("--dist_url", default="env://", type=str, help="""url used to set up distributed
+                    training; see https://pytorch.org/docs/stable/distributed.html""")
+parser.add_argument("--world_size", default=-1, type=int, help="""
+                    number of processes: it is set automatically and
+                    should not be passed as argument""")
+parser.add_argument("--rank", default=0, type=int, help="""rank of this process:
+                    it is set automatically and should not be passed as argument""")
+parser.add_argument("--local_rank", default=0, type=int,
+                    help="this argument is not used and should be ignored")
 
 ##################################
 #  LOGGING & SAVING
 ##################################
-parser.add_argument("--dump-path", 
-    type=str, 
-    default="./experiments/SKA/default",
-    help="experiment dump path for checkpoints and log"
-)
-parser.add_argument(
-    '--checkpoint-freq',
-    type=int,
-    default=10,
-    help='save the model at every model-save-step iterations.'
-)
-parser.add_argument(
-    '--val-freq',
-    type=int,
-    default=1,
-    help='evaluate the model at every val-freq epochs.'
-)
+parser.add_argument("--dump-path", type=str, default="./experiments/SKA/default", help="experiment dump path for checkpoints and log")
+parser.add_argument('--checkpoint-freq', type=int, default=10, help='save the model at every model-save-step iterations.')
+parser.add_argument('--val-freq',type=int, default=1, help='evaluate the model at every val-freq epochs.')
 parser.add_argument("--seed", type=int, default=31, help="seed")
+
 
 def main():
     global args
@@ -200,12 +109,14 @@ def main():
                                     download=args.download_dataset, 
                                     return_target_word=True
         )
-        #collate_fn = dataset.get_collate_fn()
+        sampler = torch.utils.data.distributed.DistributedSampler(dataset)
         dataloaders[split] = DataLoader(
             dataset,
+            sampler=sampler,
             batch_size=args.batch_size,
-            shuffle=split=='train',
-            num_workers=args.num_workers
+            num_workers=args.workers,
+            pin_memory=True,
+            drop_last=True
         )
 
     word_embeddings = None
@@ -220,7 +131,8 @@ def main():
             no_glove=args.no_glove,
             pool_size=None
         )
-        word_embeddings = word_embeddings.to(device)
+        word_embeddings = nn.SyncBatchNorm.convert_sync_batchnorm(word_embeddings)
+        word_embeddings = word_embeddings.cuda()
     
     model = resnet_models.__dict__['resnet{}'.format(args.num_layers) ](
         small_image=True,
@@ -229,7 +141,13 @@ def main():
         returned_featmaps = [3,4,5],
         multi_cropped_input=False
     )
-    model = model.to(device)
+    # synchronize batch norm layers
+    model = nn.SyncBatchNorm.convert_sync_batchnorm(model)
+    model = model.cuda()
+
+    if args.rank == 0:
+        logger.info(model)
+    logger.info("Building model done.")
     
     lr = args.lr
     params = model.parameters()
@@ -247,8 +165,10 @@ def main():
     else:
         assert(False), 'optimizer not implemented'
 
+    # objective
     criterion = nn.CrossEntropyLoss(ignore_index=-1)
-
+    # optimizer and schedulers
+    optimizer = LARC(optimizer=optimizer, trust_coefficient=0.001, clip=False)
     warmup_lr_schedule = np.linspace(args.start_warmup, args.lr, len(dataloaders['train']) * args.warmup_epochs)
     iters = np.arange(len(dataloaders['train']) * (args.num_epochs - args.warmup_epochs))
     cosine_lr_schedule = np.array([args.final_lr + 0.5 * (args.lr - args.final_lr) * (1 + \
@@ -257,6 +177,19 @@ def main():
 
     logger.info("Building optimizer done.")
 
+    # wrap models
+    model = nn.parallel.DistributedDataParallel(
+        model,
+        device_ids=[args.gpu_to_work_on],
+        find_unused_parameters=True,
+    )
+    if args.sim_loss:
+        word_embeddings = nn.parallel.DistributedDataParallel(
+            word_embeddings,
+            device_ids=[args.gpu_to_work_on],
+            find_unused_parameters=True,
+        )
+    
     # optionally resume from a checkpoint
     to_restore = {"epoch": 0, "val_acc":0, "best_val_acc":0}
     restart_from_checkpoint(
@@ -272,12 +205,16 @@ def main():
     for epoch in range(start_epoch, args.num_epochs):
         
         logger.info("============ Starting epoch %i ... ============" % epoch)
+        
+        # set sampler
+        dataloaders['train'].sampler.set_epoch(epoch)
 
         # train for one epoch
         scores = train_model(model, word_embeddings, dataloaders['train'], optimizer, criterion, epoch, lr_schedule, writer)
 
         # evaluate if needed
         if epoch % args.val_freq == 0:
+            dataloaders['test'].sampler.set_epoch(epoch)
             eval_score = eval_model(model, word_embeddings, dataloaders['test'], epoch, writer)
             if eval_score > best_val_acc:
                 best_val_acc = eval_score
