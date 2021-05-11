@@ -24,19 +24,27 @@ class ViCoWordEmbeddings(nn.Module):
         self.pool_size = pool_size
         self.one_hot = one_hot
         if one_hot:
-            self.embed = torch.eye(self.num_classes).cuda().requires_grad_(False)          
+            self.embed = nn.Embedding(
+                self.num_classes,
+                self.num_classes
+                ).requires_grad_(False)
         else:
             self.vico_mode = vico_mode
             self.linear_dim = linear_dim
             self.glove_dim = 300
             self.embed_dims = self.glove_dim
 
-            if self.vico_mode == 'linear':
+            if self.vico_mode == 'vico_linear':
                 self.embed_dims += self.linear_dim
                 embed_dir = 'glove_300_vico_linear_{}'.format(self.linear_dim)    
-            else:
+            elif self.vico_mode == 'vico_select':
                 self.embed_dims += 200
                 embed_dir = 'glove_300_vico_select_200'
+            else:
+                raise ValueError("Unknown embedding type:{}".format(self.vico_mode))
+
+            
+            self.original_embed_dims = self.embed_dims
             
             self.embed_h5py = os.path.join(root, embed_dir, 'visual_word_vecs.h5py')
             self.embed_word_to_idx_json = os.path.join(root, embed_dir, 'visual_word_vecs_idx.json')
@@ -56,12 +64,12 @@ class ViCoWordEmbeddings(nn.Module):
 
     def load_embeddings(self,labels):
         if self.one_hot:
-            #self.embed -= torch.mean(self.embed, dim=0, keepdims=True)
+            self.embed.weight.data.copy_(torch.eye(self.num_classes).cuda())
             return
         else:
             embed_h5py = io.load_h5py_object(self.embed_h5py)['embeddings']
             word_to_idx = io.load_json_object(self.embed_word_to_idx_json)
-            embeddings = np.zeros([len(labels),self.embed_dims])
+            embeddings = np.zeros([len(labels),self.original_embed_dims])
             word_to_label = {}
             for i,label in enumerate(labels):
                 if ' ' in label:
@@ -86,13 +94,13 @@ class ViCoWordEmbeddings(nn.Module):
                 embeddings[i] /= denom
 
             if self.no_glove:
-                embeddings[:,:self.glove_dim] = None
+                embeddings = np.delete(embeddings, np.s_[:self.glove_dim], axis=1) 
                 #embeddings[:,:self.glove_dim] = 0
-            if self.vico_mode == 'select' and self.no_hypernym:
-                embeddings[:,self.glove_dim+100:self.glove_dim+150] = None
+            if self.vico_mode == 'vico_select' and self.no_hypernym:
+                embeddings = np.delete(embeddings, np.s_[100:150], axis=1)
                 #embeddings[:,self.glove_dim+100:self.glove_dim+150] = 0
 
-            self.embed.weight.data.copy_(torch.from_numpy(embeddings[embeddings!=None]))
+            self.embed.weight.data.copy_(torch.from_numpy(embeddings))
             #self.embed.weight -= torch.mean(self.embed.weight, dim=0, keepdims=True)
 
     def forward(self, feats, label_idxs, target):

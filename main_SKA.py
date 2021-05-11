@@ -61,7 +61,7 @@ parser.add_argument('--sim-loss', action='store_true',
     help='include semantic similarity in the loss')
 parser.add_argument('--one-hot', action='store_true',
  help='use one-hot labels instead of embeddings')
-parser.add_argument('--ce-warmup-epochs', default=50, type=int,
+parser.add_argument('--ce-warmup-epochs', default=200, type=int,
  help='linearly increase the cross-entropy loss weight')
 parser.add_argument('--vico-mode', type=str, default='vico_linear', choices=['vico_linear', 'vico_select'],
     help='embedding types to be used in semantic similarity loss')
@@ -265,6 +265,7 @@ def train_model(model, word_embeddings, dataloader, optimizer, criterion, epoch,
     model.train()
     if word_embeddings != None:
         word_embeddings.train()
+        word_embeddings.load_embeddings(dataloader.dataset.labels)
 
     ce_warmup_iters = len(dataloader) * args.ce_warmup_epochs
     end = time.time() 
