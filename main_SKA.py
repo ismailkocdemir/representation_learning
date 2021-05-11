@@ -22,7 +22,7 @@ from data.dataset import get_custom_dataset
 import util.io as io
 from logging import getLogger
 from util.util import *
-from util.dist_util import init_dist
+from util.dist_util import init_distributed_mode
 logger = getLogger()
 
 parser = argparse.ArgumentParser(description="Implementation of SKA (Supervised Kernel Alignment)")
