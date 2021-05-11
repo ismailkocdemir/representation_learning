@@ -136,7 +136,7 @@ class PD_Stats(object):
             self.stats.to_pickle(self.path)
 
 
-def restart_from_checkpoint(ckp_paths, run_variables=None, **kwargs):
+def restart_from_checkpoint(ckp_paths, run_variables=None, distributed=False, **kwargs):
     """
     Re-start from checkpoint
     """
@@ -154,9 +154,12 @@ def restart_from_checkpoint(ckp_paths, run_variables=None, **kwargs):
     logger.info("Found checkpoint at {}".format(ckp_path))
 
     # open checkpoint file
-    checkpoint = torch.load(
-        ckp_path,  map_location="cuda:" + str(torch.distributed.get_rank() % torch.cuda.device_count())
-    )
+    if distributed:
+        checkpoint = torch.load(
+            ckp_path,  map_location="cuda:" + str(torch.distributed.get_rank() % torch.cuda.device_count())
+        )
+    else:
+        checkpoint = torch.load(ckp_path,  map_location="cuda:0")
 
     # key is what to look for in the checkpoint file
     # value is the object to load

@@ -76,7 +76,8 @@ parser.add_argument('--no-glove',action='store_true',
 #########################
 #### dist parameters ###
 #########################
-parser.add_argument("--world_size", default=-1, type=int, help="""
+parser.add_argument('--distributed', action='store_true', help='set distributed mode to true for multi-gpu training')
+parser.add_argument("--world_size", default=1, type=int, help="""
                     number of processes: it is set automatically and
                     should not be passed as argument""")
 parser.add_argument("--rank", default=0, type=int, help="""rank of this process:
@@ -92,11 +93,11 @@ parser.add_argument('--checkpoint-freq', type=int, default=10, help='save the mo
 parser.add_argument('--val-freq',type=int, default=1, help='evaluate the model at every val-freq epochs.')
 parser.add_argument("--seed", type=int, default=31, help="seed")
 
-
 def main():
     global args
     args = parser.parse_args()
-    args.rank, args.world_size, args.gpu_to_work_on = init_distributed_mode()
+    if args.distributed:
+        args.rank, args.world_size, args.gpu_to_work_on = init_distributed_mode()
     fix_random_seeds(args.seed)
     logger, training_stats = initialize_exp(args, "epoch", "loss", "acc", "acc_val")
     writer = SummaryWriter(args.dump_path)
@@ -110,12 +111,12 @@ def main():
                                     download=args.download_dataset, 
                                     return_target_word=True
         )
-        sampler = torch.utils.data.distributed.DistributedSampler(dataset)
+        sampler = torch.utils.data.distributed.DistributedSampler(dataset) if args.distributed else None
         dataloaders[split] = DataLoader(
             dataset,
             sampler=sampler,
             batch_size=args.batch_size,
-            num_workers=args.workers,
+            num_workers=args.num_workers,
             pin_memory=True,
             drop_last=True
         )
@@ -132,7 +133,8 @@ def main():
             no_glove=args.no_glove,
             pool_size=None
         )
-        word_embeddings = nn.SyncBatchNorm.convert_sync_batchnorm(word_embeddings)
+        if args.distributed:
+            word_embeddings = nn.SyncBatchNorm.convert_sync_batchnorm(word_embeddings)
         word_embeddings = word_embeddings.cuda()
     
     model = resnet_models.__dict__['resnet{}'.format(args.num_layers) ](
@@ -143,7 +145,8 @@ def main():
         multi_cropped_input=False
     )
     # synchronize batch norm layers
-    model = nn.SyncBatchNorm.convert_sync_batchnorm(model)
+    if args.distributed:
+        model = nn.SyncBatchNorm.convert_sync_batchnorm(model)
     model = model.cuda()
 
     if args.rank == 0:
@@ -184,18 +187,19 @@ def main():
     logger.info("Building optimizer done.")
 
     # wrap models
-    model = nn.parallel.DistributedDataParallel(
-        model,
-        device_ids=[args.gpu_to_work_on],
-        find_unused_parameters=True,
-    )
-    if args.sim_loss:
-        word_embeddings = nn.parallel.DistributedDataParallel(
-            word_embeddings,
+    if args.distributed:
+        model = nn.parallel.DistributedDataParallel(
+            model,
             device_ids=[args.gpu_to_work_on],
             find_unused_parameters=True,
         )
-    
+        if args.sim_loss:
+            word_embeddings = nn.parallel.DistributedDataParallel(
+                word_embeddings,
+                device_ids=[args.gpu_to_work_on],
+                find_unused_parameters=True,
+            )
+        
     # optionally resume from a checkpoint
     to_restore = {"epoch": 0, "val_acc":0, "best_val_acc":0}
     restart_from_checkpoint(
@@ -203,6 +207,7 @@ def main():
         run_variables=to_restore,
         state_dict=model,
         optimizer=optimizer,
+        distributed=args.distributed
     )
 
     eval_score = to_restore["val_acc"]
@@ -213,37 +218,40 @@ def main():
         logger.info("============ Starting epoch %i ... ============" % epoch)
         
         # set sampler
-        dataloaders['train'].sampler.set_epoch(epoch)
+        if args.distributed:
+            dataloaders['train'].sampler.set_epoch(epoch)
 
         # train for one epoch
         scores = train_model(model, word_embeddings, dataloaders['train'], optimizer, criterion, epoch, lr_schedule, writer)
 
         # evaluate if needed
-        if epoch % args.val_freq == 0:
-            dataloaders['test'].sampler.set_epoch(epoch)
+        if epoch % args.val_freq == 0 and args.rank == 0:
+            if args.distributed:
+                dataloaders['test'].sampler.set_epoch(epoch)
             eval_score = eval_model(model, word_embeddings, dataloaders['test'], epoch, writer)
             if eval_score > best_val_acc:
                 best_val_acc = eval_score
         
         training_stats.update(scores + (eval_score,))
 
-        # after epoch: save checkpoints
-        save_dict = {
-            "epoch": epoch + 1,
-            "val_acc": eval_score,
-            "best_val_acc": best_val_acc,
-            "state_dict": model.state_dict(),
-            "optimizer": optimizer.state_dict(),
-        }
-        torch.save(
-            save_dict,
-            os.path.join(args.dump_path, "checkpoint.pth.tar"),
-        )
-        if epoch % args.checkpoint_freq == 0 or epoch == args.num_epochs - 1:
-            shutil.copyfile(
+        if args.rank == 0:
+            # after epoch: save checkpoints
+            save_dict = {
+                "epoch": epoch + 1,
+                "val_acc": eval_score,
+                "best_val_acc": best_val_acc,
+                "state_dict": model.state_dict(),
+                "optimizer": optimizer.state_dict(),
+            }
+            torch.save(
+                save_dict,
                 os.path.join(args.dump_path, "checkpoint.pth.tar"),
-                os.path.join(args.dump_checkpoints, "ckp-" + str(epoch) + ".pth"),
             )
+            if epoch % args.checkpoint_freq == 0 or epoch == args.num_epochs - 1:
+                shutil.copyfile(
+                    os.path.join(args.dump_path, "checkpoint.pth.tar"),
+                    os.path.join(args.dump_checkpoints, "ckp-" + str(epoch) + ".pth"),
+                )
 
     writer.close()
 
@@ -300,7 +308,7 @@ def train_model(model, word_embeddings, dataloader, optimizer, criterion, epoch,
         batch_time.update(time.time() - end)
         end = time.time()
         losses.update(loss.item(), data['img'].size(0))
-        if it % 50 == 0:
+        if it % 50 == 0 and args.rank == 0:
             # training accuracy 
             _,argmax = torch.max(logits,1)
             argmax = argmax.data.cpu().numpy()
