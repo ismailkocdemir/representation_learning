@@ -2,12 +2,12 @@
 
 #SBATCH -p barbun-cuda 
 #SBATCH -A ikocdemir
-#SBATCH -J ska                          
+#SBATCH -J ska-1h
 #SBATCH --workdir=/truba/home/ikocdemir/representation_learning/
 #SBATCH --nodes=1
-#SBATCH --cpus-per-task 10
-#SBATCH --ntasks-per-node=2
-#SBATCH --gres=gpu:2                                               
+#SBATCH --cpus-per-task 20
+#SBATCH --ntasks-per-node=1
+#SBATCH --gres=gpu:1                                               
 #SBATCH --output=/truba/home/ikocdemir/representation_learning/slurm_out/slurm-%j.out
 #SBATCH --error=/truba/home/ikocdemir/representation_learning/slurm_out/slurm-%j.err
 #SBATCH --time=1-00:00:00				                            
@@ -24,17 +24,18 @@ cd /truba/home/ikocdemir/representation_learning/
 
 python main_SKA.py \
 --data-path /truba/home/ikocdemir/data/ \
---embed-path /truba/home/ikocdemir/data/pretrained_embeddings \
+--embed-path /truba/home/ikocdemir/data/pretrained_vico \
 --download-dataset \
 --dataset-type 'Cifar100' \
---batch-size 512 \
---lr 1e-1 \
---num-epochs 700 \
---warmup-epochs 10 \
+--batch-size 256 \
+--lr 2e-1 \
+--num-epochs 600 \
+--lr-decay-epochs '450,500,550' \
+--warmup-epochs 0 \
 --sim-loss \
 --vico-mode 'vico_select' \
---no-hypernym \
---no-glove \
+--dump-path ./experiments/SKA/one-hot \
+--one-hot
 
 echo "JOB DONE!!!"
 

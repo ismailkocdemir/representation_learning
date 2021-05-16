@@ -42,11 +42,13 @@ parser.add_argument('--download-dataset', action='store_true', help='download th
 ###################################
 # TRAINING PARAMS
 ###################################
-parser.add_argument('--num-epochs', default=500, type=int, help='Number of epochs to train')
+parser.add_argument('--num-epochs', default=600, type=int, help='Number of epochs to train')
 parser.add_argument('--batch-size', default=128, type=int, help='batch size.')
 parser.add_argument('--optimizer', type=str, default='SGD',choices=['SGD', 'Adam'], help='Optimizer. Choose from: [SGD, Adam]')
-parser.add_argument('--lr', type=float, default=0.01, help='learning rate')
+parser.add_argument('--lr', type=float, default=0.1, help='learning rate')
+parser.add_argument('--lr-decay-epochs', type=str, default='700,800,900', help='where to decay lr, can be a list')
 parser.add_argument("--lr-decay-rate", default=0.1, type=float, help="learning rate decay rate")
+parser.add_argument('--cosine', action='store_true', help='use cosine annealing for learning rate')
 parser.add_argument("--warmup-epochs", default=0, type=int, help="number of warmup epochs")
 parser.add_argument("--start-warmup", default=0.01, type=float, help="initial warmup learning rate")
 parser.add_argument('--momentum', type=float, default=0.9, help='momentum for the optimizer.')
@@ -176,13 +178,18 @@ def main():
     optimizer = LARC(optimizer=optimizer, trust_coefficient=0.001, clip=False)
     # warm up
     warmup_lr_schedule = np.linspace(args.start_warmup, args.lr, len(dataloaders['train']) * args.warmup_epochs)
-    # cosine
+    # cosine/step
     iters = np.arange(len(dataloaders['train']) * (args.num_epochs - args.warmup_epochs))
-    final_lr = args.lr * (args.lr_decay_rate) ** 3
-    cosine_lr_schedule = np.array([final_lr + 0.5 * (args.lr - final_lr) * (1 + \
-                         math.cos(math.pi * t / (len(dataloaders['train']) * (args.num_epochs - args.warmup_epochs)))) for t in iters])
-    # warmup + cosine
-    lr_schedule = np.concatenate((warmup_lr_schedule, cosine_lr_schedule))
+    if args.cosine:
+        final_lr = args.lr * (args.lr_decay_rate) ** 3
+        cosine_lr_schedule = np.array([final_lr + 0.5 * (args.lr - final_lr) * (1 + \
+                            math.cos(math.pi * t / (len(dataloaders['train']) * (args.num_epochs - args.warmup_epochs)))) for t in iters])
+        lr_schedule = np.concatenate((warmup_lr_schedule, cosine_lr_schedule))
+    else:
+        steps = np.array([int(item.strip()) * len(dataloaders['train']) for item in args.lr_decay_epochs.split(',')])
+        step_lr_schedule = np.array([args.lr * args.lr_decay_rate ** (t >= steps).sum() for t in iters])
+        lr_schedule = np.concatenate((warmup_lr_schedule, step_lr_schedule))
+        
 
     logger.info("Building optimizer done.")
 
