@@ -14,6 +14,7 @@ import torch.nn.functional as F
 import torch.backends.cudnn as cudnn
 import torch.optim
 from torch.utils.tensorboard import SummaryWriter
+import wandb
 
 from util.util import (
     bool_flag,
@@ -70,7 +71,9 @@ parser.add_argument("--start_warmup", default=0, type=float,
 #########################
 #### other parameters ###
 #########################
-parser.add_argument("--dump_path", type=str, default="./experiments/STN_VAE/default",
+parser.add_argument("--project", type=str, required=True)
+parser.add_argument("--exp-name", type=str, required=True)
+parser.add_argument("--dump_path", type=str, default="./experiments",
                     help="experiment dump path for checkpoints and log")
 parser.add_argument("--workers", default=4, type=int,
                     help="number of data loading workers")
@@ -83,6 +86,8 @@ def main():
     global args
     args = parser.parse_args()
     fix_random_seeds(args.seed)
+
+    args.dump_path = os.path.join(args.dump_path, args.project, args.exp_name)
     logger, training_stats = initialize_exp(args, "epoch", "loss")
 
     # build data
@@ -143,7 +148,13 @@ def main():
     start_epoch = to_restore["epoch"]
 
     cudnn.benchmark = True
-    summary_writer = SummaryWriter(args.dump_path)
+    #summary_writer = SummaryWriter(args.dump_path)
+    summary_writer = wandb.init(project=args.project,
+                                config=args, 
+                                dir=args.dump_path,
+                                resume=start_epoch>0,
+                                name=args.exp_name)
+
     for epoch in range(start_epoch, args.epochs):
 
         # train the network for one epoch
@@ -166,6 +177,8 @@ def main():
                 os.path.join(args.dump_path, "checkpoint.pth.tar"),
                 os.path.join(args.dump_checkpoints, "ckp-" + str(epoch) + ".pth"),
             )
+    
+    summary_writer.finish()
 
 
 def train(train_loader, model, optimizer, epoch, lr_schedule, summary_writer):
@@ -200,16 +213,20 @@ def train(train_loader, model, optimizer, epoch, lr_schedule, summary_writer):
         end = time.time()
         if it % 50 == 0:
             # update the tensorboard
-            summary_writer.add_scalar('lr', lr_schedule[iteration], iteration)
-            for k,v in loss_vars.items():
-                summary_writer.add_scalar(k, v, iteration)
+            #summary_writer.add_scalar('lr', lr_schedule[iteration], iteration)
+            # for k,v in loss_vars.items():
+            #     summary_writer.add_scalar(k, v, iteration)
+            summary_writer.log({'lr': lr_schedule[iteration]}, iteration)
+            summary_writer.log(loss_vars, iteration)
             
             if it % 500 == 0:
                 visuals_dict = model.get_current_visuals()
                 for k,v in visuals_dict.items():
                     grid = torchvision.utils.make_grid(v)
-                    summary_writer.add_image(k, grid, iteration)
-            summary_writer.flush()
+                    wandb_image = wandb.Image(grid, caption="Caption goes here")
+                    summary_writer.log({k:wandb_image})
+                    #summary_writer.add_image(k, grid, iteration)
+            #summary_writer.flush()
 
             # update the logger
             logger.info(

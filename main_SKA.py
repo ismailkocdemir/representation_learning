@@ -11,6 +11,7 @@ from torch.utils.data import DataLoader
 from torch.autograd import Variable
 import torch.optim as optim
 from torch.utils.tensorboard import SummaryWriter
+import wandb
 from apex.parallel.LARC import LARC
 import numpy as np
 
@@ -90,7 +91,9 @@ parser.add_argument("--gpu_to_work_on", default=0, type=int, help="""local rank?
 ##################################
 #  LOGGING & SAVING
 ##################################
-parser.add_argument("--dump-path", type=str, default="./experiments/SKA/default", help="experiment dump path for checkpoints and log")
+parser.add_argument("--project", type=str, required=True)
+parser.add_argument("--exp-name", type=str, required=True)
+parser.add_argument("--dump-path", type=str, default="./experiments", help="experiment dump path for checkpoints and log")
 parser.add_argument('--checkpoint-freq', type=int, default=10, help='save the model at every model-save-step iterations.')
 parser.add_argument('--val-freq',type=int, default=1, help='evaluate the model at every val-freq epochs.')
 parser.add_argument("--seed", type=int, default=31, help="seed")
@@ -101,9 +104,10 @@ def main():
     if args.distributed:
         args.rank, args.world_size, args.gpu_to_work_on = init_distributed_mode()
     fix_random_seeds(args.seed)
-    logger, training_stats = initialize_exp(args, "epoch", "loss", "acc", "acc_val")
-    writer = SummaryWriter(args.dump_path)
 
+    args.dump_path = os.path.join(args.dump_path, args.project, args.exp_name)
+    logger, training_stats = initialize_exp(args, "epoch", "loss", "acc", "acc_val")
+    
     dataloaders = {}
     num_classes = 10 if args.dataset_type == 'STL10' else 100
     for split in ['train', 'test']:
@@ -220,6 +224,14 @@ def main():
     eval_score = to_restore["val_acc"]
     start_epoch = to_restore["epoch"]
     best_val_acc = to_restore["best_val_acc"]
+
+    #writer = SummaryWriter(args.dump_path)
+    writer = wandb.init(project=args.project,
+                                config=args, 
+                                dir=args.dump_path,
+                                resume=start_epoch>0,
+                                name=args.exp_name)
+
     for epoch in range(start_epoch, args.num_epochs):
         
         logger.info("============ Starting epoch %i ... ============" % epoch)
@@ -242,6 +254,8 @@ def main():
         training_stats.update(scores + (eval_score,))
 
         if args.rank == 0:
+            writer.log({'val/best_val_acc':best_val_acc}, (epoch + 1) * len(dataloaders['train']))
+            
             # after epoch: save checkpoints
             save_dict = {
                 "epoch": epoch + 1,
@@ -260,7 +274,7 @@ def main():
                     os.path.join(args.dump_checkpoints, "ckp-" + str(epoch) + ".pth"),
                 )
 
-    writer.close()
+    writer.finish()
 
 def train_model(model, word_embeddings, dataloader, optimizer, criterion, epoch, lr_schedule, writer):
     # train the network for one epoch
@@ -328,9 +342,11 @@ def train_model(model, word_embeddings, dataloader, optimizer, criterion, epoch,
             log_items['train/loss'] = loss.item()
             log_items['train/acc'] = acc
 
-            writer.add_scalar('lr', optimizer.param_groups[0]['lr'], iteration)
-            for name,value in log_items.items():
-                writer.add_scalar(name, value, iteration)
+            #writer.add_scalar('lr', optimizer.param_groups[0]['lr'], iteration)
+            writer.log({'lr':optimizer.param_groups[0]['lr']}, iteration)
+            #for name,value in log_items.items():
+                #writer.add_scalar(name, value, iteration)
+            writer.log(log_items, iteration)
 
             logger.info(
                 "Epoch: [{0}][{1}]\t"
@@ -348,7 +364,7 @@ def train_model(model, word_embeddings, dataloader, optimizer, criterion, epoch,
                     lr=optimizer.param_groups[0]["lr"],
                 )
             )
-            writer.flush()
+            #writer.flush()
         
     return (epoch, losses.avg, accuracy.avg)
 
@@ -391,9 +407,10 @@ def eval_model(model, word_embeddings, dataloader, epoch, writer):
             num_seen_classes += 1
 
         val_acc = round(seen_acc*100 / num_seen_classes,4)
-        iteration = epoch * len(dataloader)
-        writer.add_scalar('val/acc',val_acc,iteration)
-
+        iteration = (epoch + 1) * len(dataloader)
+        #writer.add_scalar('val/acc',val_acc,iteration)
+        writer.log({"val/acc":val_acc}, iteration)
+        
         # update the logger
         logger.info(
             "Epoch: [{0}]\t"
@@ -402,7 +419,7 @@ def eval_model(model, word_embeddings, dataloader, epoch, writer):
                 val_acc=val_acc
             )
         )
-        writer.flush()
+        #writer.flush()
 
     return val_acc
 

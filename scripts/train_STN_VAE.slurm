@@ -4,8 +4,8 @@
 #SBATCH -A romer
 #SBATCH -c 16
 #SBATCH -n 1
-#SBATCH -J nohp
-#SBATCH --workdir=/truba/home/ikocdemir/representation_learning/             
+#SBATCH -J stn-vae
+#SBATCH --workdir=/truba/home/ikocdemir/representation_learning/               
 #SBATCH --gres=gpu:1                                               
 #SBATCH --output=/truba/home/ikocdemir/representation_learning/slurm_out/slurm-%j.out
 #SBATCH --error=/truba/home/ikocdemir/representation_learning/slurm_out/slurm-%j.err
@@ -17,22 +17,12 @@ conda activate romer-gpu
 
 cd /truba/home/ikocdemir/representation_learning/
 
-python main_SKA.py \
---data-path /truba/home/ikocdemir/data/ \
---embed-path /truba/home/ikocdemir/data/pretrained_vico \
---download-dataset \
---dataset-type 'Cifar100' \
---batch-size 512 \
---lr 4e-1 \
---num-epochs 600 \
---lr-decay-epochs '450,500,550' \
---warmup-epochs 5 \
---sim-loss \
---vico-mode 'vico_select' \
---no-hypernym \
---dump-path ./experiments \
---project 'SKA' \
---exp-name 'vico_select-no_hyp-SGD' \
+python main_STN_VAE.py \
+--project "STN_VAE" \ 
+--exp-name "deneme" \
+--data_path /truba/home/ikocdemir/data \
+--batch_size 8 \
+--download_dataset
 
 echo "JOB DONE!!!"
 
