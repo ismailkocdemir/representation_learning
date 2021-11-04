@@ -10,7 +10,7 @@ import itertools
 from torch.utils.data import DataLoader
 from torch.autograd import Variable
 import torch.optim as optim
-from torch.utils.tensorboard import SummaryWriter
+#from torch.utils.tensorboard import SummaryWriter
 import wandb
 from apex.parallel.LARC import LARC
 import numpy as np

@@ -13,7 +13,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.backends.cudnn as cudnn
 import torch.optim
-from torch.utils.tensorboard import SummaryWriter
+#from torch.utils.tensorboard import SummaryWriter
 import wandb
 
 from util.util import (
@@ -69,6 +69,18 @@ parser.add_argument("--start_warmup", default=0, type=float,
 
 
 #########################
+#### dist parameters ###
+#########################
+parser.add_argument('--distributed', action='store_true', help='set distributed mode to true for multi-gpu training')
+parser.add_argument("--world_size", default=1, type=int, help="""
+                    number of processes: it is set automatically and
+                    should not be passed as argument""")
+parser.add_argument("--rank", default=0, type=int, help="""rank of this process:
+                    it is set automatically and should not be passed as argument""")
+parser.add_argument("--gpu_to_work_on", default=0, type=int, help="""local rank??""")
+
+
+#########################
 #### other parameters ###
 #########################
 parser.add_argument("--project", type=str, required=True)
@@ -98,7 +110,7 @@ def main():
             transforms.ToTensor(),
             transforms.Normalize((0., 0., 0.), (1., 1., 1.))
         ]),
-        download=False
+        download=args.download_dataset
     )
 
     train_loader = torch.utils.data.DataLoader(
